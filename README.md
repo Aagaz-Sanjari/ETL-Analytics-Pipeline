@@ -1,112 +1,142 @@
-# Crypto ETL & Analytics Pipeline
+# ELT Analytics Pipeline
 
-An end-to-end data pipeline that pulls live cryptocurrency prices, cleans and enriches the data, stores it in PostgreSQL, computes rolling analytics from accumulated history, and visualizes trends in Power BI.
+A multi-source ELT pipeline that collects live data from public APIs, stores it untouched in PostgreSQL, and transforms it into analytics-ready tables with dbt. New data sources plug in through a small connector class and one config entry, so the loader, the raw table, and the scheduling never change.
 
-## What it does
-
-- **Extract**: Pulls live market data for 5 coins (Bitcoin, Ethereum, Solana, Cardano, Polkadot) from the CoinGecko API
-- **Transform**: Cleans the raw data, handles missing values, and adds engineered features (e.g. flagging large 24h price movers)
-- **Load**: Appends the processed data into a PostgreSQL database, building a historical record with every run
-- **Analytics**: Reads the full accumulated history from PostgreSQL and computes a rolling moving average and volatility per coin
-- **Visualization**: A Power BI dashboard connected directly to the database, showing price trends per coin
+Currently running with two live sources: **crypto market data** (CoinGecko) and **weather** (Open-Meteo).
 
 ## Architecture
 
 ```
-CoinGecko API
-     |
-     v
-extract.py  -->  data/raw/*.json
-     |
-     v
-transform.py  -->  data/processed/*.csv
-     |
-     v
-load.py  -->  PostgreSQL (crypto_prices table)
-     |
-     v
-compute_analytics.py  -->  rolling averages & volatility
-     |
-     v
-Power BI Dashboard
+sources.yml (which sources to run)
+      |
+connectors/  (one small class per source)
+      |
+ingest/  (generic loader: hash, dedupe, batch id)
+      |
+PostgreSQL  raw.ingested_records  (original JSON, never modified)
+      |
+dbt  staging views  ->  mart tables  (+ data tests)
+      |
+Power BI dashboard
 ```
+
+The pipeline is scheduled with Windows Task Scheduler (`run_pipeline.bat`), which runs ingestion, `dbt run`, and `dbt test` in order.
+
+## Key design decisions
+
+- **ELT, not ETL.** Raw API responses are loaded first and transformed inside the database. The raw table is the source of truth, so every downstream table can be rebuilt at any time.
+- **One generic raw table.** All sources land in `raw.ingested_records` with `source`, `dataset`, a JSONB `payload`, a `payload_hash`, a `batch_id`, and `ingested_at`.
+- **Idempotent loads.** A unique constraint on `(source, dataset, payload_hash)` means re-running the pipeline never creates duplicate records. This fixed a real problem in the first version of this project, where repeated runs inserted the same CoinGecko snapshot several times and skewed the rolling metrics.
+- **Connector pattern.** Each source is a class with a `fetch()` method. `sources.yml` decides which connectors run and with which parameters.
+- **Transformations in SQL.** Returns, moving averages, and volatility are computed with dbt window functions instead of Pandas.
+
+## Data sources
+
+| Source | Dataset | What is collected |
+|---|---|---|
+| CoinGecko | markets | Price, market cap, volume, 24h change for Bitcoin, Ethereum, Solana, Cardano, Polkadot |
+| Open-Meteo | current | Temperature, humidity, wind speed, precipitation for Mumbai, Delhi, Pune, Bengaluru |
+
+## dbt models
+
+| Layer | Model | Description |
+|---|---|---|
+| Staging (view) | `stg_coingecko_markets` | Typed, validated crypto records extracted from the JSON payload |
+| Staging (view) | `stg_open_meteo_current` | Typed weather observations per city |
+| Mart (table) | `fct_coin_metrics` | Price return vs the previous reading, 3-point moving average, rolling volatility per coin |
+| Mart (table) | `fct_city_weather` | Temperature change, 3-point moving average and max, rain flag per city |
+
+Data tests (9) cover not-null checks, accepted values for coin IDs and city names, and required timestamps.
 
 ## Tech stack
 
-Python, Pandas, Requests, SQLAlchemy, PostgreSQL, Power BI
+Python, PostgreSQL, dbt (dbt-postgres), SQLAlchemy, Requests, PyYAML, Power BI, Windows Task Scheduler, Git.
 
 ## Project structure
 
 ```
-ETL-Analytics-Pipeline/
-├── extract/
-│   └── extract.py
-├── transform/
-│   └── transform.py
-├── load/
-│   └── load.py
-├── sql/
-│   └── analytics.sql
-├── compute_analytics.py
-├── crypto-analytics-dashboard.pbix
-├── requirements.txt
-└── .env (not committed — see setup below)
+connectors/        source connectors (base class, CoinGecko, Open-Meteo)
+ingest/            generic loader, runner, and backfill script
+crypto_dbt/        dbt project (staging and mart models, tests)
+sources.yml        list of active sources and their parameters
+run_pipeline.bat   one-command run: ingest, dbt run, dbt test
 ```
+
+The first version of the project (Pandas ETL scripts in `extract/`, `transform/`, `load/`) is kept for reference and is replaced by the structure above.
 
 ## Setup
 
-1. Clone the repo and create a virtual environment:
-```
+**1. Requirements:** Python 3.12, PostgreSQL, and a database named `crypto_analytics`.
+
+**2. Install dependencies**
+
+```powershell
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-2. Create a `.env` file in the project root with your PostgreSQL credentials:
+**3. Create a `.env` file in the project root**
+
 ```
-DB_USER=your_username
-DB_PASSWORD=your_password
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=crypto_analytics
+DB_USER=your_user
+DB_PASSWORD=your_password
 ```
 
-3. Create the database and table in PostgreSQL (see `sql/analytics.sql` for reference queries once data is loaded).
+**4. Create the raw table**
 
-## Running the pipeline
+```sql
+create schema if not exists raw;
 
-```
-python extract/extract.py
-python transform/transform.py
-python load/load.py
-python compute_analytics.py
-```
-
-Each run pulls fresh prices and appends them to the database, building historical data over time. Running it repeatedly (or on a schedule) allows the rolling average and volatility calculations to become more meaningful.
-
-## Sample output
-
-After several runs, `compute_analytics.py` outputs each coin's latest price alongside its rolling average and volatility:
-
-```
-Loaded 35 historical rows across 5 coins
-
-Latest rolling metrics per coin:
-      id  current_price  moving_avg_price  rolling_volatility
-polkadot       1.110000          1.110000            0.000000
- bitcoin   83216.000000      83237.000000           36.373067
- cardano       0.234165          0.234365            0.000347
-ethereum    2635.830000       2637.153333            2.292081
-  solana     113.010000        113.043333            0.057735
+create table if not exists raw.ingested_records (
+    id bigserial primary key,
+    source text not null,
+    dataset text not null,
+    payload jsonb not null,
+    payload_hash text not null,
+    batch_id uuid not null,
+    ingested_at timestamptz not null default now(),
+    unique (source, dataset, payload_hash)
+);
 ```
 
-## Dashboard
+**5. Run the pipeline**
 
-The Power BI dashboard (`crypto-analytics-dashboard.pbix`) connects directly to the PostgreSQL database and displays price trends per coin over time.
+```powershell
+python -m ingest.run
+cd crypto_dbt
+Get-Content ..\.env | ForEach-Object { if ($_ -match '^\s*([^#=]+)=(.*)$') { Set-Item -Path "Env:$($matches[1].Trim())" -Value $matches[2].Trim() } }
+dbt run --profiles-dir .
+dbt test --profiles-dir .
+```
 
-## Future improvements
+Or run everything with `run_pipeline.bat`, which is also what the scheduled task executes.
 
-- Orchestrate the pipeline with Airflow instead of manual runs
-- Add incremental extraction (only pull new data since the last run)
-- Containerize with Docker for portable deployment
-- Add automated data quality checks
+## Adding a new data source
+
+1. Create a class in `connectors/` that extends `Connector`, sets `source` and `dataset`, and returns a list of records from `fetch()`.
+2. Add an entry for it in `sources.yml`.
+3. Add a dbt staging model that extracts typed columns from the JSON payload, plus a test file.
+
+No change to the loader, the raw table, or the scheduler is needed.
+
+## Limitations
+
+- Data is collected as scheduled snapshots, not a continuous stream.
+- The database and scheduler run locally, so collection only happens while the machine is on.
+- Rolling metrics use the last 3 readings, so they become more meaningful as history accumulates.
+
+## Roadmap
+
+- Power BI dashboard on the mart tables (crypto page built, weather page in progress)
+- Pipeline run log table (rows loaded, duration, test results)
+- Docker and Airflow for orchestration
+- GitHub Actions to run dbt tests on each push
+
+## Author
+
+Aagaz Sanjari
+[GitHub](https://github.com/Aagaz-Sanjari) | [LinkedIn](https://linkedin.com/in/aagaz-sanjari-b3a03b283)
