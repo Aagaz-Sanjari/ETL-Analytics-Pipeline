@@ -1,0 +1,19 @@
+version: 2
+
+models:
+  - name: stg_coingecko_markets
+    columns:
+      - name: coin_id
+        tests:
+          - not_null
+          - accepted_values:
+              values: [bitcoin, ethereum, solana, cardano, polkadot]
+      - name: current_price
+        tests:
+          - not_null
+      - name: last_updated_at
+        tests:
+          - not_null
+      - name: ingested_at
+        tests:
+          - not_null

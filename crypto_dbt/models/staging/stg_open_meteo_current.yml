@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: stg_open_meteo_current
+    columns:
+      - name: city
+        tests:
+          - not_null
+          - accepted_values:
+              values: [Mumbai, Delhi, Pune, Bengaluru]
+      - name: observed_at
+        tests:
+          - not_null
+      - name: temperature_c
+        tests:
+          - not_null

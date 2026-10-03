@@ -1,0 +1,12 @@
+sources:
+  - connector: connectors.coingecko.CoinGeckoMarkets
+    params:
+      coins: [bitcoin, ethereum, solana, cardano, polkadot]
+
+  - connector: connectors.open_meteo.OpenMeteoCurrent
+    params:
+      cities:
+        - {name: Mumbai, latitude: 19.07, longitude: 72.88}
+        - {name: Delhi, latitude: 28.61, longitude: 77.21}
+        - {name: Pune, latitude: 18.52, longitude: 73.86}
+        - {name: Bengaluru, latitude: 12.97, longitude: 77.59}
