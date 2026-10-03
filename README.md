@@ -2,7 +2,17 @@
 
 A multi-source ELT pipeline that collects live data from public APIs, stores it untouched in PostgreSQL, and transforms it into analytics-ready tables with dbt. New data sources plug in through a small connector class and one config entry, so the loader, the raw table, and the scheduling never change.
 
-Currently running with two live sources: **crypto market data** (CoinGecko) and **weather** (Open-Meteo).
+Currently running with two live sources: **crypto market data** (CoinGecko) and **weather** (Open-Meteo), with a two-page Power BI dashboard on top.
+
+## Dashboard
+
+**Crypto page:** coin selector, price vs 3-reading moving average, rolling volatility, latest price.
+
+![Crypto page](docs/dashboard-crypto.png)
+
+**Weather page:** city selector, temperature vs moving average, latest temperature, observed rainfall.
+
+![Weather page](docs/dashboard-weather.png)
 
 ## Architecture
 
@@ -58,6 +68,7 @@ Python, PostgreSQL, dbt (dbt-postgres), SQLAlchemy, Requests, PyYAML, Power BI, 
 connectors/        source connectors (base class, CoinGecko, Open-Meteo)
 ingest/            generic loader, runner, and backfill script
 crypto_dbt/        dbt project (staging and mart models, tests)
+docs/              dashboard screenshots
 sources.yml        list of active sources and their parameters
 run_pipeline.bat   one-command run: ingest, dbt run, dbt test
 ```
@@ -115,6 +126,8 @@ dbt test --profiles-dir .
 
 Or run everything with `run_pipeline.bat`, which is also what the scheduled task executes.
 
+**6. Dashboard:** open the Power BI file in the repo, connect it to the `crypto_analytics` database, and load `analytics.fct_coin_metrics` and `analytics.fct_city_weather`.
+
 ## Adding a new data source
 
 1. Create a class in `connectors/` that extends `Connector`, sets `source` and `dataset`, and returns a list of records from `fetch()`.
@@ -131,7 +144,6 @@ No change to the loader, the raw table, or the scheduler is needed.
 
 ## Roadmap
 
-- Power BI dashboard on the mart tables (crypto page built, weather page in progress)
 - Pipeline run log table (rows loaded, duration, test results)
 - Docker and Airflow for orchestration
 - GitHub Actions to run dbt tests on each push
